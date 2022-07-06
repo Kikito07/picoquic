@@ -35,8 +35,6 @@
 extern "C" {
 #endif
 
-#define PICOQUIC_VERSION "1.01"
-
 #ifndef PICOQUIC_MAX_PACKET_SIZE
 #define PICOQUIC_MAX_PACKET_SIZE 1536
 #endif
@@ -631,6 +629,7 @@ typedef struct st_picoquic_quic_t {
     unsigned int is_cert_verifier_custom : 1;
     unsigned int use_long_log : 1;
     unsigned int should_close_log : 1;
+    unsigned int use_unique_log_names : 1; /* Add 64 bit random number to log names for uniqueness */
     unsigned int dont_coalesce_init : 1; /* test option to turn of packet coalescing on server */
     unsigned int one_way_grease_quic_bit : 1; /* Grease of QUIC bit, but do not announce support */
     unsigned int log_pn_dec : 1; /* Log key hashes on key changes to debug crypto */
@@ -643,6 +642,7 @@ typedef struct st_picoquic_quic_t {
     unsigned int enforce_client_only : 1; /* Do not authorize incoming connections */
     unsigned int is_flow_control_limited : 1; /* Enforce flow control limit for tests */
     unsigned int test_large_server_flight : 1; /* Use TP to ensure server flight is at least 8K */
+    unsigned int is_port_blocking_disabled : 1; /* Do not check client port on incoming connections */
 
     picoquic_stateless_packet_t* pending_stateless_packet;
 
@@ -795,6 +795,7 @@ typedef struct st_picoquic_stream_head_t {
     unsigned int stream_data_blocked_sent : 1; /* If stream_data_blocked has been sent to peer, and no data sent on stream since */
     unsigned int is_output_stream : 1; /* If stream is listed in the output list */
     unsigned int is_closed : 1; /* Stream is closed, closure is accouted for */
+    unsigned int is_discarded : 1; /* There should be no more callback for that stream, the application has discarded it */
 } picoquic_stream_head_t;
 
 #define IS_CLIENT_STREAM_ID(id) (unsigned int)(((id) & 1) == 0)
@@ -1379,6 +1380,8 @@ typedef struct st_picoquic_cnx_t {
     picoquic_stateless_packet_t* first_sooner;
     picoquic_stateless_packet_t* last_sooner;
 
+    /* Log handling */
+    uint16_t log_unique;
     FILE* f_binlog;
     char* binlog_file_name;
 
@@ -1429,8 +1432,6 @@ int picoquic_find_path_by_id(picoquic_cnx_t* cnx, picoquic_path_t* path_x, int i
     uint64_t path_id_type, uint64_t path_id_value);
 int picoquic_assign_peer_cnxid_to_path(picoquic_cnx_t* cnx, int path_id);
 void picoquic_reset_path_mtu(picoquic_path_t* path_x);
-int picoquic_probe_new_path_ex(picoquic_cnx_t* cnx, const struct sockaddr* addr_from,
-    const struct sockaddr* addr_to, uint64_t current_time, int to_preferred_address);
 
 /* Management of the CNX-ID stash */
 int picoquic_init_cnxid_stash(picoquic_cnx_t* cnx);
@@ -1781,7 +1782,7 @@ int picoquic_decode_frames(picoquic_cnx_t* cnx, picoquic_path_t * path_x, const 
 int picoquic_skip_frame(const uint8_t* bytes, size_t bytes_max, size_t* consumed, int* pure_ack);
 const uint8_t* picoquic_skip_path_abandon_frame(const uint8_t* bytes, const uint8_t* bytes_max);
 
-int picoquic_decode_closing_frames(uint8_t* bytes, size_t bytes_max, int* closing_received);
+int picoquic_decode_closing_frames(picoquic_cnx_t* cnx, uint8_t* bytes, size_t bytes_max, int* closing_received);
 
 uint64_t picoquic_decode_transport_param_stream_id(uint64_t rank, int extension_mode, int stream_type);
 uint64_t picoquic_prepare_transport_param_stream_id(uint64_t stream_id);

@@ -1,23 +1,23 @@
 /*
- * Author: Christian Huitema
- * Copyright (c) 2017, Private Octopus, Inc.
- * All rights reserved.
- *
- * Permission to use, copy, modify, and distribute this software for any
- * purpose with or without fee is hereby granted, provided that the above
- * copyright notice and this permission notice appear in all copies.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL Private Octopus, Inc. BE LIABLE FOR ANY
- * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- */
+* Author: Christian Huitema
+* Copyright (c) 2017, Private Octopus, Inc.
+* All rights reserved.
+*
+* Permission to use, copy, modify, and distribute this software for any
+* purpose with or without fee is hereby granted, provided that the above
+* copyright notice and this permission notice appear in all copies.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+* ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+* WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+* DISCLAIMED. IN NO EVENT SHALL Private Octopus, Inc. BE LIABLE FOR ANY
+* DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+* (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+* LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+* ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+* (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+* SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
 
 /* clang-format off */
 
@@ -614,29 +614,26 @@ int picoquic_store_text_addr(struct sockaddr_storage *stored_addr, const char *i
 }
 
 /* Get text string for address and port */
-char const *picoquic_addr_text(struct sockaddr *addr, char *text, size_t text_size)
+char const* picoquic_addr_text(struct sockaddr* addr, char* text, size_t text_size)
 {
     char addr_buffer[128];
-    char const *addr_text;
-    char const *ret_text = "?:?";
+    char const* addr_text;
+    char const* ret_text = "?:?";
 
-    switch (addr->sa_family)
-    {
+    switch (addr->sa_family) {
     case AF_INET:
         addr_text = inet_ntop(AF_INET,
-                              (const void *)(&((struct sockaddr_in *)addr)->sin_addr),
-                              addr_buffer, sizeof(addr_buffer));
-        if (picoquic_sprintf(text, text_size, NULL, "%s:%d", addr_text, ((struct sockaddr_in *)addr)->sin_port) == 0)
-        {
+            (const void*)(&((struct sockaddr_in*)addr)->sin_addr),
+            addr_buffer, sizeof(addr_buffer));
+        if (picoquic_sprintf(text, text_size, NULL, "%s:%d", addr_text, ntohs(((struct sockaddr_in*) addr)->sin_port)) == 0) {
             ret_text = text;
         }
         break;
     case AF_INET6:
         addr_text = inet_ntop(AF_INET6,
-                              (const void *)(&((struct sockaddr_in6 *)addr)->sin6_addr),
-                              addr_buffer, sizeof(addr_buffer));
-        if (picoquic_sprintf(text, text_size, NULL, "[%s]:%d", addr_text, ((struct sockaddr_in6 *)addr)->sin6_port) == 0)
-        {
+            (const void*)(&((struct sockaddr_in6*)addr)->sin6_addr),
+            addr_buffer, sizeof(addr_buffer));
+        if (picoquic_sprintf(text, text_size, NULL, "[%s]:%d", addr_text, ntohs(((struct sockaddr_in6*) addr)->sin6_port)) == 0) {
             ret_text = text;
         }
     default:
@@ -1527,4 +1524,37 @@ void copy_buf_to_pkt(void *buf, unsigned len, struct rte_mbuf *pkt, unsigned off
     rte_memcpy(rte_pktmbuf_mtod_offset(pkt, char *, offset),
                buf, (size_t)len);
     return;
+}
+/* Convert binary string to test string for logging purposes.
+ */
+char* picoquic_uint8_to_str(char* text, size_t text_len, const uint8_t* data, size_t data_len)
+{
+    size_t render_length = data_len;
+    size_t rendered;
+
+    if (render_length + 1 > text_len) {
+        if (text_len > 4) {
+            render_length = text_len - 4;
+        }
+        else {
+            render_length = 0;
+        }
+    }
+
+    for (rendered = 0; rendered < render_length; rendered++) {
+        int c = data[rendered];
+        if (c < ' ' || c >= 127) {
+            c = '?';
+        }
+        text[rendered] = (char)c;
+    }
+
+    if (rendered < data_len) {
+        for (size_t i = 0; i < 3 && rendered + 1 < text_len; i++, rendered++) {
+            text[rendered] = '.';
+        }
+    }
+    text[rendered] = 0;
+
+    return text;
 }

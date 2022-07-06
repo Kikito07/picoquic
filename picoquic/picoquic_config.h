@@ -42,6 +42,7 @@ typedef enum {
     picoquic_option_DO_RETRY,
     picoquic_option_INITIAL_RANDOM,
     picoquic_option_RESET_SEED,
+    picoquic_option_DisablePortBlocking,
     picoquic_option_SOLUTION_DIR,
     picoquic_option_CC_ALGO,
     picoquic_option_SPINBIT,
@@ -96,6 +97,7 @@ typedef struct st_picoquic_quic_config_t {
     picoquic_spinbit_version_enum spinbit_policy; /* control spin bit */
     picoquic_lossbit_version_enum lossbit_policy; /* control loss bit */
     int multipath_option;
+    char *multipath_alt_config;
     int bdp_frame_option;
     /* TODO: control other extensions, e.g. time stamp, ack delay */
     /* Common flags */
@@ -103,6 +105,7 @@ typedef struct st_picoquic_quic_config_t {
     unsigned int use_long_log : 1;
     unsigned int do_preemptive_repeat : 1;
     unsigned int do_not_use_gso : 1;
+    unsigned int disable_port_blocking : 1;
     /* Server only */
     char const* www_dir;
     uint64_t reset_seed[2];

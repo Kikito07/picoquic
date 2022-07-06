@@ -1894,7 +1894,7 @@ int picoquic_assign_peer_cnxid_to_path(picoquic_cnx_t* cnx, int path_id)
 
 /* Create a new path in order to trigger a migration */
 int picoquic_probe_new_path_ex(picoquic_cnx_t* cnx, const struct sockaddr* addr_from,
-    const struct sockaddr* addr_to, uint64_t current_time, int to_preferred_address)
+    const struct sockaddr* addr_to, int if_index, uint64_t current_time, int to_preferred_address)
 {
     int ret = 0;
     int partial_match_path = -1;
@@ -1937,6 +1937,7 @@ int picoquic_probe_new_path_ex(picoquic_cnx_t* cnx, const struct sockaddr* addr_
             picoquic_set_path_challenge(cnx, path_id, current_time);
             cnx->path[path_id]->path_is_preferred_path = to_preferred_address;
             cnx->path[path_id]->is_nat_challenge = 0;
+            cnx->path[path_id]->if_index_dest = if_index;
         }
     }
 
@@ -1946,7 +1947,7 @@ int picoquic_probe_new_path_ex(picoquic_cnx_t* cnx, const struct sockaddr* addr_
 int picoquic_probe_new_path(picoquic_cnx_t* cnx, const struct sockaddr* addr_from,
     const struct sockaddr* addr_to, uint64_t current_time)
 {
-    return picoquic_probe_new_path_ex(cnx, addr_from, addr_to, current_time, 0);
+    return picoquic_probe_new_path_ex(cnx, addr_from, addr_to, 0, current_time, 0);
 }
 
 int picoquic_abandon_path(picoquic_cnx_t* cnx, int path_id, uint64_t reason, char const * phrase)
@@ -2977,10 +2978,9 @@ picoquic_cnx_t* picoquic_create_cnx(picoquic_quic_t* quic,
         cnx->local_cnxid_oldest_created = start_time;
 
         /* Initialize the connection ID stash */
-        
-        /* Should return 0, since this is the first path */
         ret = picoquic_create_path(cnx, start_time, NULL, addr_to);
         if (ret == 0) {
+            /* Should return 0, since this is the first path */
             ret = picoquic_init_cnxid_stash(cnx);
         }
 
@@ -3224,6 +3224,10 @@ picoquic_cnx_t* picoquic_create_cnx(picoquic_quic_t* quic,
             picoquic_delete_cnx(cnx);
             cnx = NULL;
         }
+    }
+
+    if (quic->use_unique_log_names) {
+        picoquic_crypto_random(quic, &cnx->log_unique, sizeof(cnx->log_unique));
     }
 
     if (cnx != NULL && !cnx->client_mode) {
@@ -3476,6 +3480,11 @@ void picoquic_set_log_level(picoquic_quic_t* quic, int log_level)
 {
     /* Only two level for now: log first 100 packets, or log everything. */
     quic->use_long_log = (log_level > 0) ? 1 : 0;
+}
+
+void picoquic_use_unique_log_names(picoquic_quic_t* quic, int use_unique_log_names)
+{
+    quic->use_unique_log_names = use_unique_log_names;
 }
 
 void picoquic_set_random_initial(picoquic_quic_t* quic, int random_initial)

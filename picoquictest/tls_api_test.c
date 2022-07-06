@@ -21,6 +21,7 @@
 
 #include "picoquic_internal.h"
 #include "picoquic_utils.h"
+#include "picosocks.h"
 #include "tls_api.h"
 #include "picoquictest_internal.h"
 #ifdef _WINDOWS
@@ -697,7 +698,7 @@ int test_api_callback(picoquic_cnx_t* cnx,
         int ret = -1;
         if (ctx->datagram_ack_fn != NULL) {
             ret = ctx->datagram_ack_fn(cnx, fin_or_event,
-                bytes, length, ctx->datagram_ctx);
+                bytes, length, stream_id /* encode send_time */, ctx->datagram_ctx);
         }
         return ret;
     }
@@ -2966,6 +2967,73 @@ int stateless_reset_handshake_test()
     return ret;
 }
 
+/* Immediate close. Test that a server can issue an immediate close,
+ * and that the client eventually closes the connection. 
+ */
+
+int immediate_close_test()
+{
+    uint64_t simulated_time = 0;
+    uint64_t loss_mask = 0;
+    uint64_t nb_packet_sent_before_close = 0;
+    picoquic_test_tls_api_ctx_t* test_ctx = NULL;
+    int ret = tls_api_init_ctx(&test_ctx, 0, PICOQUIC_TEST_SNI, PICOQUIC_TEST_ALPN, &simulated_time, NULL, NULL, 0, 0, 0);
+    uint8_t buffer[128];
+    int was_active = 0;
+
+    if (ret == 0) {
+        ret = tls_api_connection_loop(test_ctx, &loss_mask, 0, &simulated_time);
+    }
+
+    if (ret == 0) {
+        ret = wait_client_connection_ready(test_ctx, &simulated_time);
+    }
+
+    /* Immediate close */
+    if (ret == 0) {
+        nb_packet_sent_before_close = test_ctx->cnx_server->nb_packets_sent;
+        picoquic_close_immediate(test_ctx->cnx_server);
+    }
+    /* Client sends some data, in order to test the connection */
+    if (ret == 0) {
+        memset(buffer, 0xaa, sizeof(buffer));
+        ret = picoquic_add_to_stream(test_ctx->cnx_client, 4,
+            buffer, sizeof(buffer), 1);
+    }
+
+    /* Perform a couple rounds of sending data */
+    for (int i = 0; ret == 0 && i < 256 ; i++) {
+        was_active = 0;
+
+        ret = tls_api_one_sim_round(test_ctx, &simulated_time, 0, &was_active);
+        if (test_ctx->cnx_client->cnx_state >= picoquic_state_disconnected) {
+            /* Client has noticed the disconnect */
+            break;
+        }
+    }
+
+    /* Client and server should now be in state disconnected */
+    if (ret == 0 && test_ctx->cnx_client->cnx_state != picoquic_state_disconnected) {
+        ret = -1;
+    }
+
+    if (ret == 0 && test_ctx->cnx_server != NULL){
+        if (test_ctx->cnx_server->cnx_state != picoquic_state_disconnected) {
+            ret = -1;
+        }
+        else if (nb_packet_sent_before_close != test_ctx->cnx_server->nb_packets_sent)
+        {
+            ret = -1;
+        }
+    }
+
+    if (test_ctx != NULL) {
+        tls_api_delete_ctx(test_ctx);
+        test_ctx = NULL;
+    }
+
+    return ret;
+}
 
 /*
  * verify that a connection is correctly established after a stateless retry,
@@ -3969,9 +4037,12 @@ int zero_rtt_delay_test()
  * send a stop sending request. Then ask for another transmission. The
  * test succeeds if only few bytes of the first are received, and all bytes
  * of the second.
+ * 
+ * The same code is used to test the "stream discard" test, creates a reset
+ * and a stop sending in a single call.
  */
 
-int stop_sending_test()
+int stop_sending_test_one(int discard)
 {
     uint64_t simulated_time = 0;
     uint64_t loss_mask = 0;
@@ -4002,7 +4073,18 @@ int stop_sending_test()
 
     /* issue the stop sending command */
     if (ret == 0 && test_ctx->cnx_client != NULL) {
-        ret = picoquic_stop_sending(test_ctx->cnx_client, test_scenario_stop_sending[0].stream_id, 1);
+        if (discard) {
+            ret = picoquic_discard_stream(test_ctx->cnx_client, test_scenario_stop_sending[0].stream_id, 1);
+            /* discarding the stream causes end of notifications, so we
+             * simulate a reset notification */
+            if (test_api_callback(test_ctx->cnx_client, test_scenario_stop_sending[0].stream_id,
+                NULL, 0, picoquic_callback_stream_reset, (void*)&test_ctx->client_callback, NULL) != 0) {
+                ret = -1;
+            }
+        }
+        else {
+            ret = picoquic_stop_sending(test_ctx->cnx_client, test_scenario_stop_sending[0].stream_id, 1);
+        }
     }
 
     /* resume the sending scenario */
@@ -4039,6 +4121,18 @@ int stop_sending_test()
         test_ctx = NULL;
     }
 
+    return ret;
+}
+
+int stop_sending_test()
+{
+    int ret = stop_sending_test_one(0);
+    return ret;
+}
+
+int discard_stream_test()
+{
+    int ret = stop_sending_test_one(1);
     return ret;
 }
 
@@ -11859,6 +11953,187 @@ int error_reason_test()
     if (test_ctx != NULL) {
         tls_api_delete_ctx(test_ctx);
         test_ctx = NULL;
+    }
+
+    return ret;
+}
+ /* Test of the blocked ports functionality
+  */
+
+int port_blocked_test_one(picoquic_quic_t * quic,
+    uint8_t* packet, size_t packet_length, 
+    struct sockaddr* addr_from, struct sockaddr* addr_to,
+    int expect_blocked, uint64_t current_time)
+{
+    uint8_t send_buffer[PICOQUIC_MAX_PACKET_SIZE];
+    struct sockaddr_storage s_to;
+    struct sockaddr_storage s_from;
+    int if_index = 0;
+    picoquic_cnx_t* first_cnx = NULL;
+    picoquic_cnx_t* last_cnx = NULL;
+    size_t send_length = 0;
+    picoquic_connection_id_t log_cid = { 0 };
+
+
+    int ret = picoquic_incoming_packet_ex(quic, packet, packet_length, addr_from, addr_to, 0, 0, &first_cnx, current_time);
+
+    if (ret == 0) {
+        ret = picoquic_prepare_next_packet_ex(quic, current_time, send_buffer, PICOQUIC_MAX_PACKET_SIZE, &send_length, &s_to, &s_from, &if_index, &log_cid, &last_cnx, NULL);
+    }
+
+    if (ret == 0) {
+        if (send_length > 0 && expect_blocked) {
+            ret = -1;
+        }
+        else if (send_length == 0 && !expect_blocked) {
+            ret = -1;
+        }
+    }
+
+    return ret;
+}
+
+int port_blocked_test_address(
+    struct sockaddr* addr_from, struct sockaddr* addr_to,
+    int expect_blocked, int do_disable)
+{
+    /* Create a series of connection contexts for the list of port */
+    uint8_t send_buffer[PICOQUIC_MAX_PACKET_SIZE];
+    struct sockaddr_storage s_to;
+    struct sockaddr_storage s_from;
+    size_t send_length;
+    int if_index;
+    picoquic_connection_id_t log_cid;
+    picoquic_cnx_t* last_cnx;
+    uint64_t simulated_time = 0;
+    picoquic_test_tls_api_ctx_t* test_ctx = NULL;
+    int ret = tls_api_init_ctx(&test_ctx, PICOQUIC_V1_VERSION, PICOQUIC_TEST_SNI, PICOQUIC_TEST_ALPN, &simulated_time, NULL, NULL, 0, 1, 0);
+    /* Delete the default connection */
+    if (ret == 0) {
+        picoquic_delete_cnx(test_ctx->cnx_client);
+        if (do_disable) {
+            picoquic_disable_port_blocking(test_ctx->qserver, 1);
+        }
+    }
+    /* Perform the VN test */
+    if (ret == 0) {
+        memset(send_buffer, 0xaa, PICOQUIC_ENFORCED_INITIAL_MTU);
+        send_buffer[1] = 0xa1;
+        send_buffer[2] = 0xa2;
+        send_buffer[3] = 0xa3;
+        send_buffer[4] = 0xa4;
+        send_buffer[5] = 8;
+        send_buffer[14] = 8;
+        send_length = PICOQUIC_ENFORCED_INITIAL_MTU;
+        simulated_time += 1000;
+        ret = port_blocked_test_one(test_ctx->qserver, send_buffer, send_length, addr_from, addr_to, expect_blocked, simulated_time);
+        if (ret != 0) {
+            DBG_PRINTF("VN blocked test fails, ret = %d", ret);
+        }
+    }
+    /* test the 1RTT function */
+    if (ret == 0) {
+        memset(send_buffer, 0xbb, PICOQUIC_ENFORCED_INITIAL_MTU);
+        send_buffer[0] = 0x7f;
+        send_length = PICOQUIC_ENFORCED_INITIAL_MTU;
+        simulated_time += 1000;
+        ret = port_blocked_test_one(test_ctx->qserver, send_buffer, send_length, addr_from, addr_to, expect_blocked, simulated_time);
+        if (ret != 0) {
+            DBG_PRINTF("Stateless blocked test fails, ret = %d", ret);
+        }
+    }
+    if (ret == 0) {
+        /* Create the client connection with correct address */
+        simulated_time += 1000;
+        test_ctx->cnx_client = picoquic_create_cnx(test_ctx->qclient,
+            picoquic_null_connection_id,
+            picoquic_null_connection_id,
+            addr_to, simulated_time,
+            PICOQUIC_V1_VERSION, PICOQUIC_TEST_SNI, PICOQUIC_TEST_ALPN, 1);
+        if (test_ctx->cnx_client == NULL) {
+            ret = -1;
+        }
+        else {
+            ret = picoquic_start_client_cnx(test_ctx->cnx_client);
+            if (ret != 0) {
+                DBG_PRINTF("Cannot start client connection, ret = %d", ret);
+            }
+            else {
+                ret = picoquic_prepare_next_packet_ex(test_ctx->qclient, simulated_time, send_buffer, PICOQUIC_ENFORCED_INITIAL_MTU, &send_length, &s_to, &s_from, &if_index, &log_cid, &last_cnx, NULL);
+                if (ret == 0 && send_length == 0) {
+                    ret = -1;
+                }
+                if (ret == 0) {
+                    ret = port_blocked_test_one(test_ctx->qserver, send_buffer, send_length, addr_from, addr_to, expect_blocked, simulated_time);
+                    if (ret != 0) {
+                        DBG_PRINTF("Initial blocked test fails, ret = %d", ret);
+                    }
+                }
+            }
+        }
+    }
+    /* Delete the context */
+    if (test_ctx != NULL) {
+        tls_api_delete_ctx(test_ctx);
+        test_ctx = NULL;
+    }
+
+    return ret;
+}
+
+int port_blocked_test_port(uint16_t port, int expect_blocked)
+{
+    int ret = 0;
+    struct sockaddr_storage a_from = { 0 };
+    struct sockaddr_storage a_to = { 0 };
+    char const* a_from_t[2] = { "1.1.1.1", "2001:2:3::4" };
+    char const* a_to_t[2] = { "10.0.0.1", "2002:3::4" };
+
+    for (int a_x = 0; ret == 0 && a_x < 2; a_x++) {
+        /* set the addresses */
+        if (ret == 0) {
+            int is_name = 0;
+            ret = picoquic_get_server_address(a_from_t[a_x], port, &a_from, &is_name);
+            if (ret == 0 && is_name) {
+                ret = -1;
+            }
+        }
+        if (ret == 0) {
+            int is_name = 0;
+            ret = picoquic_get_server_address(a_to_t[a_x], 961, &a_to, &is_name);
+            if (ret == 0 && is_name) {
+                ret = -1;
+            }
+        }
+        /* Iterate for blocked or not */
+        for (int do_disable = 0; ret == 0 && do_disable < 2; do_disable++) {
+            int actually_blocked = expect_blocked && (do_disable == 0);
+
+            ret = port_blocked_test_address((struct sockaddr*)&a_from,
+                (struct sockaddr*)&a_to, actually_blocked, do_disable);
+            if (ret != 0) {
+                DBG_PRINTF("For [%s]:%u, test (%d (%d), %d) fails.",
+                    a_from_t[a_x], port, expect_blocked, actually_blocked, do_disable);
+            }
+        }
+    } 
+    return ret;
+}
+
+int port_blocked_test()
+{
+    int ret = 0;
+    const uint16_t blocked_port_to_test[] = { 0, 53, 138, 1900, 5353, 11211 };
+    const uint16_t unblocked_port_to_test[] = { 443, 4433, 33721 };
+    size_t nb_blocked = sizeof(blocked_port_to_test) / sizeof(uint16_t);
+    size_t nb_unblocked = sizeof(unblocked_port_to_test) / sizeof(uint16_t);
+
+    for (size_t i = 0; ret == 0 && i < nb_blocked; i++) {
+        ret = port_blocked_test_port(blocked_port_to_test[i], 1);
+    }
+
+    for (size_t i = 0; ret == 0 && i < nb_unblocked; i++) {
+        ret = port_blocked_test_port(unblocked_port_to_test[i], 0);
     }
 
     return ret;
