@@ -267,25 +267,31 @@ relay_job(__rte_unused void *arg)
             struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkts_burst[i], struct rte_ether_hdr *);
             for(int j = 0; j < 2; j++){
 #if RTE_VERSION < RTE_VERSION_NUM(21, 11, 0, 0)
-                
                 if(are_macs_equal(&peer_addresses[j],&eth_hdr->s_addr)){
-                    rte_ether_addr_copy(&peer_addresses[(j+1)%2], &eth_hdr->dst_addr);
+                    rte_ether_addr_copy(&peer_addresses[(j+1)%2], &eth_hdr->d_addr);
                     rte_ether_addr_copy(&port_mac, &eth_hdr->s_addr);
                     known_mac = true;
-                    
                 }
 #else 
                 if(are_macs_equal(&peer_addresses[j],&eth_hdr->src_addr)){
                     rte_ether_addr_copy(&peer_addresses[(j+1)%2], &eth_hdr->dst_addr);
                     rte_ether_addr_copy(&port_mac, &eth_hdr->src_addr);
                     known_mac = true;
-#endif
                 }
+#endif
             }
-            if(known_mac){
+            if (known_mac) {
                 rte_eth_tx_buffer(portid, qid, tx_buffer, pkts_burst[i]);
-            }
-            else{
+            } else {
+#if RTE_VERSION < RTE_VERSION_NUM(21, 11, 0, 0)
+                printf("unknown mac : %x:%x:%x:%x:%x:%x\n",
+                eth_hdr->s_addr.addr_bytes[0],
+                eth_hdr->s_addr.addr_bytes[1],
+                eth_hdr->s_addr.addr_bytes[2],
+                eth_hdr->s_addr.addr_bytes[3],
+                eth_hdr->s_addr.addr_bytes[4],
+                eth_hdr->s_addr.addr_bytes[5]);
+#else
                 printf("unknown mac : %x:%x:%x:%x:%x:%x\n",
                 eth_hdr->src_addr.addr_bytes[0],
                 eth_hdr->src_addr.addr_bytes[1],
@@ -293,6 +299,7 @@ relay_job(__rte_unused void *arg)
                 eth_hdr->src_addr.addr_bytes[3],
                 eth_hdr->src_addr.addr_bytes[4],
                 eth_hdr->src_addr.addr_bytes[5]);
+#endif
             }
             
         }
