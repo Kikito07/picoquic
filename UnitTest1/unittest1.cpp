@@ -626,6 +626,13 @@ namespace UnitTest1
             Assert::AreEqual(ret, 0);
         }
 
+        TEST_METHOD(immediate_close)
+        {
+            int ret = immediate_close_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
 		TEST_METHOD(test_very_long_stream)
 		{
 			int ret = tls_api_very_long_stream_test();
@@ -816,9 +823,16 @@ namespace UnitTest1
             Assert::AreEqual(ret, 0);
         }
 
-        TEST_METHOD(test_stop_sending)
+        TEST_METHOD(stop_sending)
         {
             int ret = stop_sending_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
+        TEST_METHOD(discard_stream)
+        {
+            int ret = discard_stream_test();
 
             Assert::AreEqual(ret, 0);
         }
@@ -983,13 +997,15 @@ namespace UnitTest1
 
             Assert::AreEqual(ret, 0);
         }
-
+#if 0
+        /* temporary disabled, as the test does not use the same memory allocator as the code. */
         TEST_METHOD(test_set_certificate_and_key)
         {
             int ret = set_certificate_and_key_test();
 
             Assert::AreEqual(ret, 0);
         }
+#endif
     
         TEST_METHOD(test_bad_client_certificate)
         {
@@ -1563,6 +1579,20 @@ namespace UnitTest1
             Assert::AreEqual(ret, 0);
         }
 
+        TEST_METHOD(l4s_reno)
+        {
+            int ret = l4s_reno_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
+        TEST_METHOD(l4s_prague)
+        {
+            int ret = l4s_prague_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
         TEST_METHOD(long_rtt)
         {
             int ret = long_rtt_test();
@@ -1731,6 +1761,30 @@ namespace UnitTest1
 
         TEST_METHOD(cid_quiescence) {
             int ret = cid_quiescence_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
+        TEST_METHOD(mediatest_video) {
+            int ret = mediatest_video_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
+        TEST_METHOD(mediatest_video_audio) {
+            int ret = mediatest_video_audio_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
+        TEST_METHOD(mediatest_video_data_audio) {
+            int ret = mediatest_video_data_audio_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
+        TEST_METHOD(mediatest_worst) {
+            int ret = mediatest_worst_test();
 
             Assert::AreEqual(ret, 0);
         }
@@ -1968,6 +2022,18 @@ namespace UnitTest1
             Assert::AreEqual(ret, 0);
         }
 
+        TEST_METHOD(h3zero_user_agent) {
+            int ret = h3zero_user_agent_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
+        TEST_METHOD(h3zero_null_sni) {
+            int ret = h3zero_null_sni_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
         TEST_METHOD(h3zero_qpack_fuzz) {
             int ret = h3zero_qpack_fuzz_test();
 
@@ -2141,6 +2207,13 @@ namespace UnitTest1
 
             Assert::AreEqual(ret, 0);
         }
+
+        TEST_METHOD(port_blocked) {
+            int ret = port_blocked_test();
+
+            Assert::AreEqual(ret, 0);
+        }
+
         TEST_METHOD(cplusplus) {
             int ret = cplusplustest();
 

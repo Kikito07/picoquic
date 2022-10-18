@@ -35,8 +35,6 @@
 extern "C" {
 #endif
 
-#define PICOQUIC_VERSION "1.01"
-
 #ifndef PICOQUIC_MAX_PACKET_SIZE
 #define PICOQUIC_MAX_PACKET_SIZE 1536
 #endif
@@ -106,6 +104,8 @@ extern "C" {
 #define PICOQUIC_CC_ALGO_NUMBER_DCUBIC 3
 #define PICOQUIC_CC_ALGO_NUMBER_FAST 4
 #define PICOQUIC_CC_ALGO_NUMBER_BBR 5
+#define PICOQUIC_CC_ALGO_NUMBER_PRAGUE 6
+
 
 #define PICOQUIC_MAX_ACK_RANGE_REPEAT 4
 #define PICOQUIC_MIN_ACK_RANGE_REPEAT 2
@@ -601,6 +601,7 @@ typedef struct st_picoquic_quic_t {
     picoquic_stored_token_t * p_first_token;
     picosplay_tree_t token_reuse_tree; /* detection of token reuse */
     uint8_t local_cnxid_length;
+    uint8_t default_stream_priority;
     uint64_t local_cnxid_ttl; /* Max time to live of Connection ID in microsec, init to "forever" */
     uint32_t mtu_max;
     uint32_t padding_multiple_default;
@@ -631,10 +632,11 @@ typedef struct st_picoquic_quic_t {
     unsigned int is_cert_verifier_custom : 1;
     unsigned int use_long_log : 1;
     unsigned int should_close_log : 1;
+    unsigned int use_unique_log_names : 1; /* Add 64 bit random number to log names for uniqueness */
     unsigned int dont_coalesce_init : 1; /* test option to turn of packet coalescing on server */
     unsigned int one_way_grease_quic_bit : 1; /* Grease of QUIC bit, but do not announce support */
     unsigned int log_pn_dec : 1; /* Log key hashes on key changes to debug crypto */
-    unsigned int random_initial : 1; /* Randomize the initial PN number */
+    unsigned int random_initial : 2; /* Randomize the initial PN number */
     unsigned int packet_train_mode : 1; /* Tune pacing for sending packet trains */
     unsigned int use_constant_challenges : 1; /* Use predictable challenges when producing constant logs. */
     unsigned int use_low_memory : 1; /* if possible, use low memory alternatives, e.g. for AES */
@@ -643,6 +645,7 @@ typedef struct st_picoquic_quic_t {
     unsigned int enforce_client_only : 1; /* Do not authorize incoming connections */
     unsigned int is_flow_control_limited : 1; /* Enforce flow control limit for tests */
     unsigned int test_large_server_flight : 1; /* Use TP to ensure server flight is at least 8K */
+    unsigned int is_port_blocking_disabled : 1; /* Do not check client port on incoming connections */
 
     picoquic_stateless_packet_t* pending_stateless_packet;
 
@@ -770,6 +773,7 @@ typedef struct st_picoquic_stream_head_t {
     uint64_t remote_error;
     uint64_t local_stop_error;
     uint64_t remote_stop_error;
+    uint64_t last_time_data_sent;
     picosplay_tree_t stream_data_tree; /* splay of received stream segments */
     uint64_t sent_offset; /* Amount of data sent in the stream */
     picoquic_stream_queue_node_t* send_queue; /* if the stream is not "active", list of data segments ready to send */
@@ -777,6 +781,8 @@ typedef struct st_picoquic_stream_head_t {
     picoquic_stream_direct_receive_fn direct_receive_fn; /* direct receive function, if not NULL */
     void* direct_receive_ctx; /* direct receive context */
     picoquic_sack_list_t sack_list; /* Track which parts of the stream were acknowledged by the peer */
+    /* Stream priority -- lowest is most urgent */
+    uint8_t stream_priority;
     /* Flags describing the state of the stream */
     unsigned int is_active : 1; /* The application is actively managing data sending through callbacks */
     unsigned int fin_requested : 1; /* Application has requested Fin of sending stream */
@@ -795,6 +801,7 @@ typedef struct st_picoquic_stream_head_t {
     unsigned int stream_data_blocked_sent : 1; /* If stream_data_blocked has been sent to peer, and no data sent on stream since */
     unsigned int is_output_stream : 1; /* If stream is listed in the output list */
     unsigned int is_closed : 1; /* Stream is closed, closure is accouted for */
+    unsigned int is_discarded : 1; /* There should be no more callback for that stream, the application has discarded it */
 } picoquic_stream_head_t;
 
 #define IS_CLIENT_STREAM_ID(id) (unsigned int)(((id) & 1) == 0)
@@ -1340,9 +1347,17 @@ typedef struct st_picoquic_cnx_t {
     struct st_picoquic_misc_frame_header_t* stream_frame_retransmit_queue;
     struct st_picoquic_misc_frame_header_t* stream_frame_retransmit_queue_last;
 
-    /* Management of datagrams */
+    /* Management of datagram queue (see also active datagram flag)
+     * The "conflict" count indicates how many datagrams have been sent while
+     * stream data was also waiting. If this passes the max value
+     * picoquic will try sending stream data before the next datagram.
+     * This is provisional -- we need to consider managing datagram
+     * priorities in a way similar to stream priorities.
+     */
     picoquic_misc_frame_header_t* first_datagram;
     picoquic_misc_frame_header_t* last_datagram;
+    int datagram_conflicts_count;
+    int datagram_conflicts_max;
 
     /* If not `0`, the connection will send keep alive messages in the given interval. */
     uint64_t keep_alive_interval;
@@ -1379,6 +1394,8 @@ typedef struct st_picoquic_cnx_t {
     picoquic_stateless_packet_t* first_sooner;
     picoquic_stateless_packet_t* last_sooner;
 
+    /* Log handling */
+    uint16_t log_unique;
     FILE* f_binlog;
     char* binlog_file_name;
 
@@ -1429,8 +1446,6 @@ int picoquic_find_path_by_id(picoquic_cnx_t* cnx, picoquic_path_t* path_x, int i
     uint64_t path_id_type, uint64_t path_id_value);
 int picoquic_assign_peer_cnxid_to_path(picoquic_cnx_t* cnx, int path_id);
 void picoquic_reset_path_mtu(picoquic_path_t* path_x);
-int picoquic_probe_new_path_ex(picoquic_cnx_t* cnx, const struct sockaddr* addr_from,
-    const struct sockaddr* addr_to, uint64_t current_time, int to_preferred_address);
 
 /* Management of the CNX-ID stash */
 int picoquic_init_cnxid_stash(picoquic_cnx_t* cnx);
@@ -1632,7 +1647,7 @@ size_t picoquic_sack_list_size(picoquic_sack_list_t* first_sack);
 
 void picoquic_record_ack_packet_data(picoquic_packet_data_t* packet_data, picoquic_packet_t* acked_packet);
 
-void picoquic_init_packet_ctx(picoquic_cnx_t* cnx, picoquic_packet_context_t* pkt_ctx);
+void picoquic_init_packet_ctx(picoquic_cnx_t* cnx, picoquic_packet_context_t* pkt_ctx, picoquic_packet_context_enum pc);
 
 /*
  * Process ack of ack
@@ -1781,7 +1796,7 @@ int picoquic_decode_frames(picoquic_cnx_t* cnx, picoquic_path_t * path_x, const 
 int picoquic_skip_frame(const uint8_t* bytes, size_t bytes_max, size_t* consumed, int* pure_ack);
 const uint8_t* picoquic_skip_path_abandon_frame(const uint8_t* bytes, const uint8_t* bytes_max);
 
-int picoquic_decode_closing_frames(uint8_t* bytes, size_t bytes_max, int* closing_received);
+int picoquic_decode_closing_frames(picoquic_cnx_t* cnx, uint8_t* bytes, size_t bytes_max, int* closing_received);
 
 uint64_t picoquic_decode_transport_param_stream_id(uint64_t rank, int extension_mode, int stream_type);
 uint64_t picoquic_prepare_transport_param_stream_id(uint64_t stream_id);

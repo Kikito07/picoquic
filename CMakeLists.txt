@@ -1,22 +1,27 @@
-cmake_minimum_required(VERSION 2.8.11)
-cmake_policy(SET CMP0003 NEW)
-project(picoquic C CXX)
-find_package (Threads REQUIRED)
+cmake_minimum_required(VERSION 3.13)
+
+# Building tests by default depends on whether this is a subproject
+if(DEFINED PROJECT_NAME)
+    option(picoquic_BUILD_TESTS "Build Tests for picoquic" OFF)
+else()
+    option(picoquic_BUILD_TESTS "Build Tests for picoquic" ON)
+endif()
+
+project(picoquic
+        VERSION 1.0.0.0
+        DESCRIPTION "picoquic library"
+        LANGUAGES C CXX)
+
+find_package(Threads REQUIRED)
+
+option(DISABLE_DEBUG_PRINTF "Disable Picoquic debug output" OFF)
 option(ENABLE_ASAN "Enable AddressSanitizer (ASAN) for debugging" OFF)
 option(ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer (UBSan) for debugging" OFF)
 
-set(CMAKE_C_STANDARD 11)
-
 message(STATUS "Initial CMAKE_C_FLAGS=${CMAKE_C_FLAGS}")
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set(CMAKE_C_FLAGS "-std=gnu99 -ggdb -g -Wall -O3 -fno-exceptions -fno-signed-zeros -fno-trapping-math -march=native -msse4 -I/usr/local/include ${CC_WARNING_FLAGS} ${CMAKE_C_FLAGS}")
-else()
-    set(CMAKE_C_FLAGS "-std=gnu99 -ggdb -g -Wall -O3 -fno-exceptions -fno-signed-zeros -frename-registers -fno-trapping-math -march=native -msse4 -I/usr/local/include ${CC_WARNING_FLAGS} ${CMAKE_C_FLAGS}")
-endif()
-
 if(DISABLE_DEBUG_PRINTF)
-    set(CMAKE_C_FLAGS "-DDISABLE_DEBUG_PRINTF ${CMAKE_C_FLAGS}")
+    list(APPEND PICOQUIC_COMPILE_DEFINITIONS DISABLE_DEBUG_PRINTF)
 endif()
 
 include(CheckCCompilerFlag)
@@ -24,42 +29,45 @@ include(CheckCXXCompilerFlag)
 include(CMakePushCheckState)
 
 if(ENABLE_ASAN)
-	cmake_push_check_state()
-	set(CMAKE_REQUIRED_LIBRARIES "-fsanitize=address")
-	check_c_compiler_flag(-fsanitize=address C__fsanitize_address_VALID)
-	check_cxx_compiler_flag(-fsanitize=address CXX__fsanitize_address_VALID)
-	cmake_pop_check_state()
-	if(NOT C__fsanitize_address_VALID OR NOT CXX__fsanitize_address_VALID)
-		message(FATAL_ERROR "ENABLE_ASAN was requested, but not supported!")
-	endif()
-	set(CMAKE_C_FLAGS "-fsanitize=address ${CMAKE_C_FLAGS}")
-	set(CMAKE_CXX_FLAGS "-fsanitize=address ${CMAKE_CXX_FLAGS}")
+    cmake_push_check_state()
+    set(CMAKE_REQUIRED_LIBRARIES "-fsanitize=address")
+    check_c_compiler_flag(-fsanitize=address C__fsanitize_address_VALID)
+    check_cxx_compiler_flag(-fsanitize=address CXX__fsanitize_address_VALID)
+    cmake_pop_check_state()
+    if(NOT C__fsanitize_address_VALID OR NOT CXX__fsanitize_address_VALID)
+        message(FATAL_ERROR "ENABLE_ASAN was requested, but not supported!")
+    endif()
+    list(APPEND PICOQUIC_ADDITIONAL_C_FLAGS -fsanitize=address)
+    list(APPEND PICOQUIC_ADDITIONAL_CXX_FLAGS -fsanitize=address)
+    list(APPEND PICOQUIC_LINKER_FLAGS -fsanitize=address)
 endif()
 
 if(ENABLE_UBSAN)
-	cmake_push_check_state()
-	set(CMAKE_REQUIRED_LIBRARIES "-fsanitize=undefined")
-	check_c_compiler_flag(-fsanitize=undefined C__fsanitize_undefined_VALID)
-	check_cxx_compiler_flag(-fsanitize=undefined CXX__fsanitize_undefined_VALID)
-	cmake_pop_check_state()
-	if(NOT C__fsanitize_undefined_VALID OR NOT CXX__fsanitize_undefined_VALID)
-		message(FATAL_ERROR "ENABLE_UBSAN was requested, but not supported!")
-	endif()
-	set(CMAKE_C_FLAGS "-fsanitize=undefined ${CMAKE_C_FLAGS}")
-	set(CMAKE_CXX_FLAGS "-fsanitize=undefined ${CMAKE_CXX_FLAGS}")
+    cmake_push_check_state()
+    set(CMAKE_REQUIRED_LIBRARIES "-fsanitize=undefined")
+    check_c_compiler_flag(-fsanitize=undefined C__fsanitize_undefined_VALID)
+    check_cxx_compiler_flag(-fsanitize=undefined CXX__fsanitize_undefined_VALID)
+    cmake_pop_check_state()
+    if(NOT C__fsanitize_undefined_VALID OR NOT CXX__fsanitize_undefined_VALID)
+        message(FATAL_ERROR "ENABLE_UBSAN was requested, but not supported!")
+    endif()
+    list(PREPEND PICOQUIC_ADDITIONAL_C_FLAGS -fsanitize=undefined)
+    list(PREPEND PICOQUIC_ADDITIONAL_CXX_FLAGS -fsanitize=undefined)
+    list(PREPEND PICOQUIC_LINKER_FLAGS -fsanitize=undefined)
 
-	# Ease detecting of "Runtime errors". If such an error is found, print a verbose
-	# error report and exit the program
-	cmake_push_check_state()
-	set(CMAKE_REQUIRED_LIBRARIES "-fno-sanitize-recover")
-	check_c_compiler_flag(-fno-sanitize-recover C__fnosanitize_recover_VALID)
-	check_cxx_compiler_flag(-fno-sanitize-recover CXX__fnosanitize_recover_VALID)
-	cmake_pop_check_state()
-	if(NOT C__fnosanitize_recover_VALID OR NOT CXX__fnosanitize_recover_VALID)
-		message(FATAL_ERROR "ENABLE_UBSAN was requested, but fno-sanitize-recover is not supported!")
-	endif()
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-sanitize-recover")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-sanitize-recover")
+    # Ease detecting of "Runtime errors". If such an error is found, print a verbose
+    # error report and exit the program
+    cmake_push_check_state()
+    set(CMAKE_REQUIRED_LIBRARIES "-fno-sanitize-recover")
+    check_c_compiler_flag(-fno-sanitize-recover C__fnosanitize_recover_VALID)
+    check_cxx_compiler_flag(-fno-sanitize-recover CXX__fnosanitize_recover_VALID)
+    cmake_pop_check_state()
+    if(NOT C__fnosanitize_recover_VALID OR NOT CXX__fnosanitize_recover_VALID)
+        message(FATAL_ERROR "ENABLE_UBSAN was requested, but fno-sanitize-recover is not supported!")
+    endif()
+    list(APPEND PICOQUIC_ADDITIONAL_C_FLAGS -fno-sanitize-recover)
+    list(APPEND PICOQUIC_ADDITIONAL_CXX_FLAGS -fno-sanitize-recover)
+    list(APPEND PICOQUIC_LINKER_FLAGS -fno-sanitize-recover)
 endif()
 
 set(PICOQUIC_LIBRARY_FILES
@@ -80,6 +88,8 @@ set(PICOQUIC_LIBRARY_FILES
     picoquic/picoquic_lb.c
     picoquic/picosocks.c
     picoquic/picosplay.c
+    picoquic/port_blocking.c
+    picoquic/prague.c
     picoquic/quicctx.c
     picoquic/sacks.c
     picoquic/sender.c
@@ -92,8 +102,7 @@ set(PICOQUIC_LIBRARY_FILES
     picoquic/tls_api.c
     picoquic/transport.c
     picoquic/unified_log.c
-    picoquic/util.c
-)
+    picoquic/util.c)
 
 set(PICOQUIC_CORE_HEADERS
      picoquic/picoquic.h
@@ -104,8 +113,7 @@ set(PICOQUIC_CORE_HEADERS
      picoquic/picoquic_logger.h
      picoquic/picoquic_binlog.h
      picoquic/picoquic_config.h
-     picoquic/picoquic_lb.h
-     )
+     picoquic/picoquic_lb.h)
 
 set(LOGLIB_LIBRARY_FILES
     loglib/autoqlog.c
@@ -114,12 +122,9 @@ set(LOGLIB_LIBRARY_FILES
     loglib/logconvert.c
     loglib/logreader.c
     loglib/qlog.c
-    loglib/svg.c
-)
+    loglib/svg.c)
 
-set(LOGLIB_HEADERS 
-     loglib/autoqlog.h)
-
+set(PICOQUIC_LOGLIB_HEADERS loglib/autoqlog.h)
 
 set(PICOQUIC_TEST_LIBRARY_FILES
     picoquictest/ack_of_ack_test.c
@@ -135,6 +140,8 @@ set(PICOQUIC_TEST_LIBRARY_FILES
     picoquictest/hashtest.c
     picoquictest/high_latency_test.c
     picoquictest/intformattest.c
+    picoquictest/l4s_test.c
+    picoquictest/mediatest.c
     picoquictest/multipath_test.c
     picoquictest/netperf_test.c
     picoquictest/parseheadertest.c
@@ -150,8 +157,7 @@ set(PICOQUIC_TEST_LIBRARY_FILES
     picoquictest/ticket_store_test.c
     picoquictest/tls_api_test.c
     picoquictest/transport_param_test.c
-    picoquictest/util_test.c
-)
+    picoquictest/util_test.c)
 
 set(PICOHTTP_LIBRARY_FILES
     picohttp/democlient.c
@@ -171,9 +177,16 @@ set(PICOHTTP_HEADERS
 set(DPDK_PICOQUIC_DEMO_HEADERS
     dpdk_picoquicdemo/dpdk_picoquicdemo.h)
 
-set(PICOHTTP_TEST_LIBRARY_FILES
-    picoquictest/h3zerotest.c
-)
+set(PICOHTTP_TEST_LIBRARY_FILES picoquictest/h3zerotest.c)
+
+OPTION(PICOQUIC_FETCH_PTLS "Fetch PicoTLS during configuration" OFF)
+if(PICOQUIC_FETCH_PTLS)
+    include(FetchContent)
+    FetchContent_Declare(picotls
+        GIT_REPOSITORY      https://github.com/h2o/picotls.git
+        GIT_TAG             2bb3e454a7aae0f0542374973c9daf83bfef8ffe)
+    FetchContent_MakeAvailable(picotls)
+endif()
 
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(PTLS REQUIRED)
@@ -185,11 +198,10 @@ if(PTLS_WITH_FUSION)
     message(STATUS "PTLS Fusion is enabled")
 else()
     message(STATUS "PTLS compiled without support for Fusion")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DPTLS_WITHOUT_FUSION")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DPTLS_WITHOUT_FUSION")
+    list(APPEND PICOQUIC_COMPILE_DEFINITIONS PTLS_WITHOUT_FUSION)
 endif()
 
-find_package(OpenSSL )
+find_package(OpenSSL REQUIRED)
 message(STATUS "root: ${OPENSSL_ROOT_DIR}")
 message(STATUS "OpenSSL_VERSION: ${OPENSSL_VERSION}")
 message(STATUS "OpenSSL_INCLUDE_DIR: ${OPENSSL_INCLUDE_DIR}")
@@ -378,15 +390,13 @@ add_custom_target(
     COMMAND clang-format
     -style=Webkit
     -i
-    ${CLANG_FORMAT_SOURCE_FILES}
-)
+    ${CLANG_FORMAT_SOURCE_FILES})
 
 # Specify Install targets
 install(TARGETS picoquicdemo picolog_t picoquic-core picoquic-log picohttp-core
         RUNTIME DESTINATION bin
         LIBRARY DESTINATION lib
-        ARCHIVE DESTINATION lib
-)
+        ARCHIVE DESTINATION lib)
 
 install(FILES
         ${PICOQUIC_CORE_HEADERS}
@@ -394,3 +404,4 @@ install(FILES
         ${PICOHTTP_HEADERS}
         ${DPDK_PICOQUIC_DEMO_HEADERS}
         DESTINATION include)
+

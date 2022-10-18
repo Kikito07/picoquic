@@ -40,6 +40,8 @@
 extern "C" {
 #endif
 
+#define PICOQUIC_VERSION "1.04a"
+
 #define PICOQUIC_ERROR_CLASS 0x400
 #define PICOQUIC_ERROR_DUPLICATE (PICOQUIC_ERROR_CLASS + 1)
 #define PICOQUIC_ERROR_AEAD_CHECK (PICOQUIC_ERROR_CLASS + 3)
@@ -98,6 +100,8 @@ extern "C" {
 #define PICOQUIC_ERROR_VERSION_NEGOTIATION (PICOQUIC_ERROR_CLASS + 55)
 #define PICOQUIC_ERROR_PACKET_TOO_LONG (PICOQUIC_ERROR_CLASS + 56)
 #define PICOQUIC_ERROR_PACKET_WRONG_VERSION (PICOQUIC_ERROR_CLASS + 57)
+#define PICOQUIC_ERROR_PORT_BLOCKED (PICOQUIC_ERROR_CLASS + 58)
+#define PICOQUIC_ERROR_DATAGRAM_TOO_LONG (PICOQUIC_ERROR_CLASS + 59)
 
 /*
  * Protocol errors defined in the QUIC spec
@@ -373,7 +377,42 @@ void picoquic_log_app_message(picoquic_cnx_t* cnx, const char* fmt, ...);
  * 0: only log the first 100 packets for each connection. */
 void picoquic_set_log_level(picoquic_quic_t* quic, int log_level);
 
-/* Require randomization of initial PN numbers */
+/* By default, the binary log and qlog files are named from the Initial CID
+ * chosen by the client. For example, if the initial CID is set
+ * to { 0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04, 0x05 } the
+ * qlog files will be named:
+ *  - deadbeef0102030405.client.qlog (on the client)
+ *  - deadbeef0102030405.server.qlog (on the server)
+ * This works well if clients follow the guidance in RFC9000 and set the
+ * files to a random value, with only a very small chance of collisions.
+ * But if the client use non standard names, the risk of collision
+ * increases.
+ * 
+ * Setting the "use unique log names" option causes the insertion
+ * of a random 16 bit string in the name, as in:
+ *  - deadbeef0102030405.a1ea.server.qlog (on the server)
+ * Setting the option to 0 restores the default behavior.
+ */
+void picoquic_use_unique_log_names(picoquic_quic_t* quic, int use_unique_log_names);
+
+/* 
+ * picoquic_set_random_initial:
+ * randomization of initial PN numbers, i.e.. the number assigned to
+ * the first packet in a given number space. The option has three possible values:
+ * 
+ *  0: do not randomize.
+ *  1: only randomize the number of the first "Initial" packet
+ *  2: randomize the value of the first packet in all packet spaces.
+ * 
+ * By default, the variable is set to 1, because randomizing the initial
+ * packet numbers in the Initial space prevents some possible DOS amplification
+ * attacks. Use the `picoquic_set_random_initial` API to set the value:
+ * 
+ *  - To 0 for test cases for which any randomization makes regression
+ *    difficult to detect
+ *  - To 2 to test whether the implementation or its peers correctly
+ *    handles non-zero initial packet numbers.
+ */
 void picoquic_set_random_initial(picoquic_quic_t* quic, int random_initial);
 
 /* Set the "packet train" mode for pacing */
@@ -439,6 +478,11 @@ typedef int (*picoquic_verify_certificate_cb_fn)(void* ctx, picoquic_cnx_t* cnx,
 
 /* Is called to free the verify certificate ctx */
 typedef void (*picoquic_free_verify_certificate_ctx)(void* ctx);
+
+/* Management of the blocked port list */
+int picoquic_check_port_blocked(uint16_t port);
+int picoquic_check_addr_blocked(const struct sockaddr* addr_from);
+void picoquic_disable_port_blocking(picoquic_quic_t* quic, int is_port_blocking_disabled);
 
 /* QUIC context create and dispose */
 picoquic_quic_t* picoquic_create(uint32_t max_nb_connections,
@@ -626,9 +670,32 @@ picoquic_cnx_t* picoquic_create_client_cnx(picoquic_quic_t* quic,
 
 int picoquic_start_client_cnx(picoquic_cnx_t* cnx);
 
-void picoquic_delete_cnx(picoquic_cnx_t* cnx);
-
+/* Closing the quic connection can be done in one of three ways.
+ *
+ * The function "picoquic_close" performs an ordered close. The "reason code"
+ * is sent to the peer, and should be visible by the peer's application,
+ * unless of course the peer discards the connection before receiving
+ * the closing message. The action is delayed until the next
+ * packet can be sent.
+ * 
+ * The function "picoquic_close_immediate" performs an abrupt close. The
+ * connection will immediately move to a "draining" state, no more
+ * packets will be sent, no information will be provided to the peer.
+ * The connection context will be kept for a very
+ * limited time, until it can be safely deleted.
+ * This should be safe to use inclduing inside a picoquic callback,
+ * but it is a bit experimental. Please file an issue if you see a problem.
+ * 
+ * The function "picoquic_delete_cnx" deletes all the resource associated
+ * with the connection, including the connection context. Any reference
+ * to the context after making this call will cause an error, which
+ * makes it unsafe to use inside a callback.
+ */
 int picoquic_close(picoquic_cnx_t* cnx, uint16_t application_reason_code);
+
+void picoquic_close_immediate(picoquic_cnx_t* cnx);
+
+void picoquic_delete_cnx(picoquic_cnx_t* cnx);
 
 /* Support for version negotiation:
  * Setting the "desired version" parameter will trigger compatible version
@@ -734,7 +801,12 @@ void * picoquic_get_callback_context(picoquic_cnx_t* cnx);
 /* Send extra frames */
 int picoquic_queue_misc_frame(picoquic_cnx_t* cnx, const uint8_t* bytes, size_t length, int is_pure_ack);
 
-/* Send datagram frame */
+/* Queue a datagram frame for sending later.
+ * The datagram length must be no more than PICOQUIC_DATAGRAM_QUEUE_MAX_LENGTH,
+ * i.e., must fit in the minimum packet length supported by Quic. Trying to
+ * queue a larger datagram will result in an error PICOQUIC_ERROR_DATAGRAM_TOO_LONG.
+ */
+#define PICOQUIC_DATAGRAM_QUEUE_MAX_LENGTH 1200
 int picoquic_queue_datagram_frame(picoquic_cnx_t* cnx, size_t length, const uint8_t* bytes);
 
 /* The incoming packet API is used to pass incoming packets to a 
@@ -854,6 +926,8 @@ int picoquic_mark_direct_receive_stream(picoquic_cnx_t* cnx,
 /* Associate stream with app context */
 int picoquic_set_app_stream_ctx(picoquic_cnx_t* cnx,
     uint64_t stream_id, void* app_stream_ctx);
+/* Remove association between stream and context */
+void picoquic_unlink_app_stream_ctx(picoquic_cnx_t* cnx, uint64_t stream_id);
 
 /* Mark stream as active, or not.
  * If a stream is active, it will be polled for data when the transport
@@ -863,18 +937,55 @@ int picoquic_set_app_stream_ctx(picoquic_cnx_t* cnx,
 int picoquic_mark_active_stream(picoquic_cnx_t* cnx,
     uint64_t stream_id, int is_active, void* v_stream_ctx);
 
-/* Mark stream as high priority. This guarantees that the data
- * queued on this stream will be sent before data from any other
- * stream. It is used for example in the HTTP3 implementation
- * to guarantee that the "settings" frame is sent from the
- * control stream before any other frame. 
- * Priority is immediately removed when all data from that
- * stream is sent; it should be reset if new data is added 
- * for which priority handling is still required. 
- * Priority is also removed if the "is_high_priority"
- * parameter is set to 0, or if another stream is set
- * to high priority.
+/* Handling of stream priority. 
+ * 
+ * Picoquic handles priority as an 8 bit unsigned integer.
+ * When ready to send stream frames, picoquic will pick the lowest priority
+ * stream for which data can be send, i.e., it is available and flow control
+ * allows it.
+ *
+ * When several streams are available at the same priority level, the
+ * handling depends on the least significant bit of the priority code.
+ * If that bit is zero, picoquic implements round robin scheduling and
+ * select the stream on which data was least recently sent. If it is
+ * one, picoquic implements FIFO scheduling and selects the stream with
+ * the lowest stream id.
+ * 
+ * There is no formal association between priority level and stream
+ * content. Application developers can pick whatever convention they
+ * see fit. One possible example could be:
+ * 
+ * - 0: system priority, e.g., the "settings" stream in HTTP3 (round robin)
+ * - 1: high priority data (FIFO)
+ * - 2: high priority data (Round Robin)
+ * - 4: real time audio (round robin)
+ * - 6: real time video (round robin)
+ * - 9: urgent data, such as CSS or JSON files (FIFO)
+ * - 10: progressive data such as JPG files (round robin) 
+ * - 11: web data (FIFO)
+ * - 255: background data (FIFO)
+ * 
+ * When streams are created, the priority is set to a default value for
+ * the QUIC context. By default, the default is 9 (FIFO), which mimics the
+ * behavior of previous versions of picoquic before the formal priority
+ * handling was introduced. The default stream priority can be changed
+ * with the `picoquic_set_default_priority` API. Changing the default
+ * priority only affects stream created after that change.
+ * 
+ * Individual stream priority can be set using `picoquic_set_stream_priority`.
+ * 
+ * The API `picoquic_mark_high_priority_stream` is a legacy of the previous
+ * versions. It is equivalent to setting the priority of the specified
+ * stream to zero if "is_high_priority" is true, or to the default
+ * stream priority if it is not.
  */
+
+/* Set the default priority for newly created streams */
+#define PICOQUIC_DEFAULT_STREAM_PRIORITY 9
+void picoquic_set_default_priority(picoquic_quic_t* quic, uint8_t default_stream_priority);
+
+/* Set the priority level of a stream. */
+int picoquic_set_stream_priority(picoquic_cnx_t* cnx, uint64_t stream_id, uint8_t stream_priority);
 
 int picoquic_mark_high_priority_stream(picoquic_cnx_t* cnx,
     uint64_t stream_id, int is_high_priority);
@@ -928,6 +1039,11 @@ uint64_t picoquic_get_next_local_stream_id(picoquic_cnx_t* cnx, int is_unidir);
  * to reset that stream when receiving the "stop sending" signal. */
 int picoquic_stop_sending(picoquic_cnx_t* cnx,
     uint64_t stream_id, uint16_t local_stream_error);
+
+/* Discard stream. This is equivalent to sending a stream reset
+ * and a stop sending request, and also setting the app context
+ * of the stream to NULL */
+int picoquic_discard_stream(picoquic_cnx_t* cnx, uint64_t stream_id, uint16_t local_stream_error);
 
 /* The function picoquic_set_datagram_ready indicates to the stack
  * whether the application is ready to send datagrams. */
@@ -1032,6 +1148,7 @@ extern picoquic_congestion_algorithm_t* picoquic_cubic_algorithm;
 extern picoquic_congestion_algorithm_t* picoquic_dcubic_algorithm;
 extern picoquic_congestion_algorithm_t* picoquic_fastcc_algorithm;
 extern picoquic_congestion_algorithm_t* picoquic_bbr_algorithm;
+extern picoquic_congestion_algorithm_t* picoquic_prague_algorithm;
 
 #define PICOQUIC_DEFAULT_CONGESTION_ALGORITHM picoquic_newreno_algorithm;
 
@@ -1069,6 +1186,10 @@ void picoquic_subscribe_pacing_rate_updates(picoquic_cnx_t* cnx, uint64_t decrea
 uint64_t picoquic_get_pacing_rate(picoquic_cnx_t* cnx);
 uint64_t picoquic_get_cwin(picoquic_cnx_t* cnx);
 uint64_t picoquic_get_rtt(picoquic_cnx_t* cnx);
+
+/* Probing new path for multipath scenarios.*/
+int picoquic_probe_new_path_ex(picoquic_cnx_t* cnx, const struct sockaddr* addr_from,
+        const struct sockaddr* addr_to, int if_index, uint64_t current_time, int to_preferred_address);
 
 #ifdef __cplusplus
 }

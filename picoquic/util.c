@@ -624,19 +624,17 @@ char const *picoquic_addr_text(struct sockaddr *addr, char *text, size_t text_si
     {
     case AF_INET:
         addr_text = inet_ntop(AF_INET,
-                              (const void *)(&((struct sockaddr_in *)addr)->sin_addr),
-                              addr_buffer, sizeof(addr_buffer));
-        if (picoquic_sprintf(text, text_size, NULL, "%s:%d", addr_text, ((struct sockaddr_in *)addr)->sin_port) == 0)
-        {
+            (const void*)(&((struct sockaddr_in*)addr)->sin_addr),
+            addr_buffer, sizeof(addr_buffer));
+        if (picoquic_sprintf(text, text_size, NULL, "%s:%d", addr_text, ntohs(((struct sockaddr_in*) addr)->sin_port)) == 0) {
             ret_text = text;
         }
         break;
     case AF_INET6:
         addr_text = inet_ntop(AF_INET6,
-                              (const void *)(&((struct sockaddr_in6 *)addr)->sin6_addr),
-                              addr_buffer, sizeof(addr_buffer));
-        if (picoquic_sprintf(text, text_size, NULL, "[%s]:%d", addr_text, ((struct sockaddr_in6 *)addr)->sin6_port) == 0)
-        {
+            (const void*)(&((struct sockaddr_in6*)addr)->sin6_addr),
+            addr_buffer, sizeof(addr_buffer));
+        if (picoquic_sprintf(text, text_size, NULL, "[%s]:%d", addr_text, ntohs(((struct sockaddr_in6*) addr)->sin6_port)) == 0) {
             ret_text = text;
         }
     default:
@@ -891,6 +889,26 @@ const uint8_t *picoquic_frames_cid_decode(const uint8_t *bytes, const uint8_t *b
     }
 
     return bytes;
+}
+
+/* Predict length of a varint encoding */
+size_t picoquic_frames_varint_encode_length(uint64_t n64)
+{
+    size_t len = 8;
+
+    if (n64 < 16384) {
+        if (n64 < 64) {
+            len = 1;
+        }
+        else {
+            len = 2;
+        }
+    }
+    else if (n64 < 1073741824) {
+        len = 4;
+    }
+
+    return len;
 }
 
 /* Encoding functions of the form uint8_t * picoquic_frame_XXX_encode(uint8_t * bytes, uint8_t * bytes-max, ...)
@@ -1519,6 +1537,7 @@ void copy_buf_to_pkt_segs(void *buf, unsigned len, struct rte_mbuf *pkt,
         copy_len = seg->data_len;
     }
     rte_memcpy(seg_buf, buf, (size_t)len);
+    return;
 }
 
 void copy_buf_to_pkt(void *buf, unsigned len, struct rte_mbuf *pkt, unsigned offset)
@@ -1527,4 +1546,37 @@ void copy_buf_to_pkt(void *buf, unsigned len, struct rte_mbuf *pkt, unsigned off
     rte_memcpy(rte_pktmbuf_mtod_offset(pkt, char *, offset),
                buf, (size_t)len);
     return;
+}
+/* Convert binary string to test string for logging purposes.
+ */
+char* picoquic_uint8_to_str(char* text, size_t text_len, const uint8_t* data, size_t data_len)
+{
+    size_t render_length = data_len;
+    size_t rendered;
+
+    if (render_length + 1 > text_len) {
+        if (text_len > 4) {
+            render_length = text_len - 4;
+        }
+        else {
+            render_length = 0;
+        }
+    }
+
+    for (rendered = 0; rendered < render_length; rendered++) {
+        int c = data[rendered];
+        if (c < ' ' || c >= 127) {
+            c = '?';
+        }
+        text[rendered] = (char)c;
+    }
+
+    if (rendered < data_len) {
+        for (size_t i = 0; i < 3 && rendered + 1 < text_len; i++, rendered++) {
+            text[rendered] = '.';
+        }
+    }
+    text[rendered] = 0;
+
+    return text;
 }

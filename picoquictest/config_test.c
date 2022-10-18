@@ -26,7 +26,7 @@
 #include "picoquic_utils.h"
 #include "picoquic_config.h"
 
-static char* ref_option_text = "c:k:K:p:v:o:w:x:rRs:S:G:P:O:M:e:C:E:i:l:Lb:q:m:n:a:t:zI:DQT:N:B:F:VU:0j:h";
+static char* ref_option_text = "c:k:K:p:v:o:w:x:rR:s:XS:G:P:O:M:e:C:E:i:l:Lb:q:m:n:a:t:zI:DQT:N:B:F:VU:0j:h";
 
 int config_option_letters_test()
 {
@@ -65,12 +65,14 @@ static picoquic_quic_config_t param1 = {
     3,
     2,
     3,
+    "127.0.0.1",
     1,
     /* Common flags */
     1, /* unsigned int initial_random : 1; */
     1, /* unsigned int use_long_log : 1; */
     1, /* unsigned int do_preemptive_repeat : 1; */
     1, /* unsigned int do_not_use_gso : 1 */
+    0, /* disable port blocking */
     /* Server only */
     "/data/www/", /* char const* www_dir; */
     { 0x012345678abcdef, 0xfedcba9876543210}, /* uint64_t reset_seed[2]; */
@@ -111,7 +113,7 @@ static char const* config_argv1[] = {
     "-P", "3",
     "-O", "2",
     "-M", "3",
-    "-R",
+    "-R", "1",
     "-L",
     "-w", "/data/www/",
     "-r",
@@ -146,12 +148,14 @@ static picoquic_quic_config_t param2 = {
     0,
     0,
     0,
+    "127.0.0.1",
     0,
     /* Common flags */
-    0, /* unsigned int initial_random : 1; */
+    3, /* unsigned int initial_random : 1; */
     0, /* unsigned int use_long_log : 1; */
     0, /* unsigned int do_preemptive_repeat : 1; */
     0, /* unsigned int do_not_use_gso : 1 */
+    1, /* disable port blocking */
     /* Server only */
     NULL, /* char const* www_dir; */
     {0, 0}, /* uint64_t reset_seed[2]; */
@@ -185,6 +189,7 @@ static const char* config_argv2[] = {
     "-z",
     "-D",
     "-Q",
+    "-X",
     "-I", "5",
     "-T", "/data/tickets.bin",
     "-N", "/data/tokens.bin",
@@ -321,7 +326,7 @@ int config_test_parse_command_line(const picoquic_quic_config_t* expected, const
         }
         ret = picoquic_config_command_line(opt, &opt_ind, argc, argv, optval, &actual);
         if (ret != 0) {
-            DBG_PRINTF("Could not part opt -%c", opt);
+            DBG_PRINTF("Could not parse opt -%c", opt);
         }
     }
 

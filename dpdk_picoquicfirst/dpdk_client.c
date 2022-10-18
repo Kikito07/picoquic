@@ -262,6 +262,7 @@ int quic_client(const char *ip_address_text, int server_port,
         (*(struct sockaddr_in *)(&loop_cb.server_address)).sin_family = AF_INET;
         (*(struct sockaddr_in *)(&loop_cb.server_address)).sin_port = htons(server_port);
         (*(struct sockaddr_in *)(&loop_cb.server_address)).sin_addr.s_addr = inet_addr(ip_address_text);
+        
     }
     else{
         if (ret == 0) {
@@ -272,6 +273,8 @@ int quic_client(const char *ip_address_text, int server_port,
         }
 
     }
+    //hacky solution
+    sni="grincheux";
     /* Create QUIC context */
     current_time = picoquic_current_time();
     callback_ctx.last_interaction_time = current_time;

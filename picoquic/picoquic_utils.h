@@ -148,10 +148,10 @@ extern "C"
 #ifndef DISABLE_DEBUG_PRINTF
 
 #define DBG_PRINTF_FILENAME_MAX 24
-#define DBG_PRINTF(fmt, ...)                                                                          \
-    debug_printf("%s:%u [%s]: " fmt "\n",                                                             \
-                 &__FILE__[MAX(DBG_PRINTF_FILENAME_MAX, sizeof(__FILE__)) - DBG_PRINTF_FILENAME_MAX], \
-                 __LINE__, __FUNCTION__, __VA_ARGS__)
+#define DBG_PRINTF(fmt, ...)                                                                 \
+    debug_printf("%s:%u [%s]: " fmt "\n",                                                    \
+        &__FILE__[MAX(DBG_PRINTF_FILENAME_MAX, sizeof(__FILE__)) - DBG_PRINTF_FILENAME_MAX], \
+        __LINE__, __func__ , __VA_ARGS__)
 
 #define DBG_FATAL_PRINTF(fmt, ...)                    \
     do                                                \
@@ -189,7 +189,10 @@ extern "C"
 #define VARINT_LEN(bytes) (((uint8_t)1) << ((bytes[0] >> 6)&3))
 #define VARINT_LEN_T(bytes, t_len) (((t_len)1) << ((bytes[0] >> 6)&3))
 
-    /* Encoding functions of the form uint8_t * picoquic_frame_XXX_encode(uint8_t * bytes, uint8_t * bytes-max, ...)
+/* Predict length of a varint encoding */
+size_t picoquic_frames_varint_encode_length(uint64_t n64);
+
+/* Encoding functions of the form uint8_t * picoquic_frame_XXX_encode(uint8_t * bytes, uint8_t * bytes-max, ...)
  */
     uint8_t *picoquic_frames_varint_encode(uint8_t *bytes, const uint8_t *bytes_max, uint64_t n64);
     uint8_t *picoquic_frames_varlen_encode(uint8_t *bytes, const uint8_t *bytes_max, size_t n);
@@ -253,7 +256,11 @@ typedef struct st_picoquic_event_t
     uint64_t picoquic_test_uniform_random(uint64_t *random_context, uint64_t rnd_max);
     double picoquic_test_gauss_random(uint64_t *random_context); /* random gaussian of variance 1.0, average 0 */
 
-    /* Really basic network simulator, only simulates a simple link using a
+/* Convert text carried in uint8_t arrays to text string
+ * suitable for logs */
+char* picoquic_uint8_to_str(char* text, size_t text_len, const uint8_t* data, size_t data_len);
+
+/* Really basic network simulator, only simulates a simple link using a
  * packet structure.
  * Init: link creation. Returns a link structure with defined bandwidth,
  * latency, loss pattern and initial time. The link is empty. The loss
@@ -262,59 +269,60 @@ typedef struct st_picoquic_event_t
  * Get packet out of link at time T + L + Queue.
  */
 
-    typedef struct st_picoquictest_sim_packet_t
-    {
-        struct st_picoquictest_sim_packet_t *next_packet;
-        uint64_t arrival_time;
-        size_t length;
-        struct sockaddr_storage addr_from;
-        struct sockaddr_storage addr_to;
-        uint8_t bytes[PICOQUIC_MAX_PACKET_SIZE];
-    } picoquictest_sim_packet_t;
+typedef struct st_picoquictest_sim_packet_t {
+    struct st_picoquictest_sim_packet_t* next_packet;
+    uint64_t arrival_time;
+    size_t length;
+    struct sockaddr_storage addr_from;
+    struct sockaddr_storage addr_to;
+    uint8_t ecn_mark;
+    uint8_t bytes[PICOQUIC_MAX_PACKET_SIZE];
+} picoquictest_sim_packet_t;
 
-    typedef struct st_picoquictest_sim_link_t
-    {
-        uint64_t next_send_time;
-        uint64_t queue_time;
-        uint64_t queue_delay_max;
-        uint64_t picosec_per_byte;
-        uint64_t microsec_latency;
-        uint64_t *loss_mask;
-        uint64_t packets_dropped;
-        uint64_t packets_sent;
-        uint64_t jitter;
-        uint64_t jitter_seed;
-        size_t path_mtu;
-        picoquictest_sim_packet_t *first_packet;
-        picoquictest_sim_packet_t *last_packet;
-        /* Variables for random early drop simulation */
-        uint64_t red_drop_mask;
-        uint64_t red_queue_max;
-        /* Variables for rate limiter simulation */
-        double bucket_increase_per_microsec;
-        uint64_t bucket_max;
-        double bucket_current;
-        uint64_t bucket_arrival_last;
-        /* Variable for multipath simulation */
-        int is_switched_off;
-    } picoquictest_sim_link_t;
+typedef struct st_picoquictest_sim_link_t {
+    uint64_t next_send_time;
+    uint64_t queue_time;
+    uint64_t queue_delay_max;
+    uint64_t picosec_per_byte;
+    uint64_t microsec_latency;
+    uint64_t* loss_mask;
+    uint64_t packets_dropped;
+    uint64_t packets_sent;
+    uint64_t jitter;
+    uint64_t jitter_seed;
+    size_t path_mtu;
+    picoquictest_sim_packet_t* first_packet;
+    picoquictest_sim_packet_t* last_packet;
+    /* Variables for random early drop simulation */
+    uint64_t red_drop_mask;
+    uint64_t red_queue_max;
+    /* L4S MAX sets the ECN mark threshold if doing L4S or DCTCP style ECN marking. */
+    uint64_t l4s_max;
+    /* Variables for rate limiter simulation */
+    double bucket_increase_per_microsec;
+    uint64_t bucket_max;
+    double bucket_current;
+    uint64_t bucket_arrival_last;
+    /* Variable for multipath simulation */
+    int is_switched_off;
+} picoquictest_sim_link_t;
 
-    picoquictest_sim_link_t *picoquictest_sim_link_create(double data_rate_in_gps,
-                                                          uint64_t microsec_latency, uint64_t *loss_mask, uint64_t queue_delay_max, uint64_t current_time);
+picoquictest_sim_link_t* picoquictest_sim_link_create(double data_rate_in_gps,
+    uint64_t microsec_latency, uint64_t* loss_mask, uint64_t queue_delay_max, uint64_t current_time);
 
-    void picoquictest_sim_link_delete(picoquictest_sim_link_t *link);
+void picoquictest_sim_link_delete(picoquictest_sim_link_t* link);
 
-    picoquictest_sim_packet_t *picoquictest_sim_link_create_packet();
+picoquictest_sim_packet_t* picoquictest_sim_link_create_packet();
 
-    uint64_t picoquictest_sim_link_next_arrival(picoquictest_sim_link_t *link, uint64_t current_time);
+uint64_t picoquictest_sim_link_next_arrival(picoquictest_sim_link_t* link, uint64_t current_time);
 
-    picoquictest_sim_packet_t *picoquictest_sim_link_dequeue(picoquictest_sim_link_t *link,
-                                                             uint64_t current_time);
+picoquictest_sim_packet_t* picoquictest_sim_link_dequeue(picoquictest_sim_link_t* link,
+    uint64_t current_time);
 
-    void picoquictest_sim_link_submit(picoquictest_sim_link_t *link, picoquictest_sim_packet_t *packet,
-                                      uint64_t current_time);
+void picoquictest_sim_link_submit(picoquictest_sim_link_t* link, picoquictest_sim_packet_t* packet,
+    uint64_t current_time);
 
-    /* SNI, Stores and Certificates used for test
+/* SNI, Stores and Certificates used for test
  */
 
 #define PICOQUIC_TEST_SNI "test.example.com"

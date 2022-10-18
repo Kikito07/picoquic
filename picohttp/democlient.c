@@ -244,6 +244,9 @@ int h3zero_client_create_stream_request(
     if (max_bytes < 3) {
         o_bytes = NULL;
     }
+    else if (host == NULL) {
+        o_bytes = NULL;
+    }
     else {
         /* Create the request frame for the specified document */
         *o_bytes++ = h3zero_frame_header;
@@ -305,17 +308,23 @@ int h3zero_client_init(picoquic_cnx_t* cnx)
 
     if (ret == 0) {
 		/* set the stream #2 to be the next stream to write! */
-        ret = picoquic_mark_high_priority_stream(cnx, 2, 1);
+        ret = picoquic_set_stream_priority(cnx, 2, 0);
     }
 
     if (ret == 0) {
         /* set the stream 6 as the encoder stream, although we do not actually create dynamic codes. */
         ret = picoquic_add_to_stream(cnx, 6, &encoder_stream_head, 1, 0);
+        if (ret == 0) {
+            ret = picoquic_set_stream_priority(cnx, 6, 1);
+        }
     }
 
     if (ret == 0) {
         /* set the stream 10 as the decoder stream, although we do not actually create dynamic codes. */
         ret = picoquic_add_to_stream(cnx, 10, &decoder_stream_head, 1, 0);
+        if (ret == 0) {
+            ret = picoquic_set_stream_priority(cnx, 10, 1);
+        }
     }
 
 
@@ -468,8 +477,12 @@ static int picoquic_demo_client_open_stream(picoquic_cnx_t* cnx,
             path_len++;
             name_buffer[path_len] = 0;
         }
+        
+        picoquic_log_app_message(cnx, "Preparing %s on stream %" PRIu64 " for %s",
+                (post_size == 0) ? "GET" : "POST", stream_id, path);
 
         /* Format the protocol specific request */
+
         switch (ctx->alpn) {
         case picoquic_alpn_http_3:
             ret = h3zero_client_create_stream_request(
@@ -494,7 +507,8 @@ static int picoquic_demo_client_open_stream(picoquic_cnx_t* cnx,
 
         if (!ctx->no_print) {
             if (ret != 0) {
-                fprintf(stdout, "Cannot send %s command for stream(%d): %s\n", (post_size == 0) ? "GET" : "POST", (int)stream_ctx->stream_id, path);
+                fprintf(stdout, "Cannot send %s command for stream(%" PRIu64 "): %s\n",
+                    (post_size == 0) ? "GET" : "POST", stream_ctx->stream_id, path);
             }
             else if (nb_repeat == 0) {
                 fprintf(stdout, "Opening stream %d to %s %s\n", (int)stream_ctx->stream_id, (post_size == 0) ? "GET" : "POST", path);
@@ -510,7 +524,7 @@ static int picoquic_demo_client_close_stream(picoquic_cnx_t * cnx,
 {
     int ret = 0;
     if (stream_ctx != NULL && stream_ctx->is_open) {
-        picoquic_set_app_stream_ctx(cnx, stream_ctx->stream_id, NULL);
+        picoquic_unlink_app_stream_ctx(cnx, stream_ctx->stream_id);
         if (stream_ctx->f_name != NULL) {
             free(stream_ctx->f_name);
             stream_ctx->f_name = NULL;

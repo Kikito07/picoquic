@@ -567,6 +567,9 @@ picoquic_quic_t* picoquic_create(uint32_t max_nb_connections,
         quic->local_cnxid_ttl = UINT64_MAX;
         quic->stateless_reset_next_time = current_time;
         quic->stateless_reset_min_interval = PICOQUIC_MICROSEC_STATELESS_RESET_INTERVAL_DEFAULT;
+        quic->default_stream_priority = PICOQUIC_DEFAULT_STREAM_PRIORITY;
+
+        quic->random_initial = 1;
         picoquic_wake_list_init(quic);
 
         if (cnx_id_callback != NULL) {
@@ -1894,7 +1897,7 @@ int picoquic_assign_peer_cnxid_to_path(picoquic_cnx_t* cnx, int path_id)
 
 /* Create a new path in order to trigger a migration */
 int picoquic_probe_new_path_ex(picoquic_cnx_t* cnx, const struct sockaddr* addr_from,
-    const struct sockaddr* addr_to, uint64_t current_time, int to_preferred_address)
+    const struct sockaddr* addr_to, int if_index, uint64_t current_time, int to_preferred_address)
 {
     int ret = 0;
     int partial_match_path = -1;
@@ -1937,6 +1940,7 @@ int picoquic_probe_new_path_ex(picoquic_cnx_t* cnx, const struct sockaddr* addr_
             picoquic_set_path_challenge(cnx, path_id, current_time);
             cnx->path[path_id]->path_is_preferred_path = to_preferred_address;
             cnx->path[path_id]->is_nat_challenge = 0;
+            cnx->path[path_id]->if_index_dest = if_index;
         }
     }
 
@@ -1946,7 +1950,7 @@ int picoquic_probe_new_path_ex(picoquic_cnx_t* cnx, const struct sockaddr* addr_
 int picoquic_probe_new_path(picoquic_cnx_t* cnx, const struct sockaddr* addr_from,
     const struct sockaddr* addr_to, uint64_t current_time)
 {
-    return picoquic_probe_new_path_ex(cnx, addr_from, addr_to, current_time, 0);
+    return picoquic_probe_new_path_ex(cnx, addr_from, addr_to, 0, current_time, 0);
 }
 
 int picoquic_abandon_path(picoquic_cnx_t* cnx, int path_id, uint64_t reason, char const * phrase)
@@ -2018,9 +2022,10 @@ void picoquic_init_ack_ctx(picoquic_cnx_t* cnx, picoquic_ack_context_t* ack_ctx)
     ack_ctx->act[1].ack_needed = 0;
 }
 
-void picoquic_init_packet_ctx(picoquic_cnx_t* cnx, picoquic_packet_context_t* pkt_ctx)
+void picoquic_init_packet_ctx(picoquic_cnx_t* cnx, picoquic_packet_context_t* pkt_ctx, picoquic_packet_context_enum pc)
 {
-    if (cnx->quic->random_initial) {
+    if (cnx->quic->random_initial && 
+        (pc == picoquic_packet_context_initial || cnx->quic->random_initial > 1)){
         pkt_ctx->send_sequence = picoquic_crypto_uniform_random(cnx->quic, PICOQUIC_PN_RANDOM_RANGE) +
             PICOQUIC_PN_RANDOM_MIN;
     }
@@ -2053,7 +2058,7 @@ int picoquic_init_cnxid_stash(picoquic_cnx_t* cnx)
         else {
             memset(cnx->cnxid_stash_first, 0, sizeof(picoquic_remote_cnxid_t));
             cnx->cnxid_stash_first->nb_path_references++;
-            picoquic_init_packet_ctx(cnx, &cnx->cnxid_stash_first->pkt_ctx);
+            picoquic_init_packet_ctx(cnx, &cnx->cnxid_stash_first->pkt_ctx, picoquic_packet_context_application);
 
             /* Initialize the reset secret to a random value. This
             * will prevent spurious matches to an all zero value, for example.
@@ -2137,7 +2142,7 @@ int picoquic_enqueue_cnxid_stash(picoquic_cnx_t* cnx, uint64_t retire_before_nex
                 memset(stashed, 0, sizeof(picoquic_remote_cnxid_t));
                 (void)picoquic_parse_connection_id(cnxid_bytes, cid_length, &stashed->cnx_id);
                 stashed->sequence = sequence;
-                picoquic_init_packet_ctx(cnx, &stashed->pkt_ctx);
+                picoquic_init_packet_ctx(cnx, &stashed->pkt_ctx, picoquic_packet_context_application);
                 memcpy(stashed->reset_secret, secret_bytes, PICOQUIC_RESET_SECRET_SIZE);
                 stashed->next = NULL;
 
@@ -2519,29 +2524,73 @@ picoquic_stream_head_t * picoquic_last_stream(picoquic_cnx_t* cnx)
 #endif
 }
 
-void picoquic_insert_output_stream(picoquic_cnx_t* cnx, picoquic_stream_head_t * stream)
+int picoquic_compare_stream_priority(picoquic_stream_head_t * stream, picoquic_stream_head_t * other) {
+    int ret = 1;
+    if (stream->stream_priority < other->stream_priority) {
+        ret = -1;
+    }
+    else if (stream->stream_priority == other->stream_priority) {
+        if (stream->stream_id < other->stream_id) {
+            ret = -1;
+        }
+        else if (stream->stream_id == other->stream_id) {
+            ret = 0;
+        }
+    }
+    return ret;
+}
+
+/* This code assumes that the stream is not currently present in the output stream.
+ */
+void picoquic_insert_output_stream(picoquic_cnx_t* cnx, picoquic_stream_head_t* stream)
 {
     if (stream->is_output_stream == 0) {
-        if (stream->stream_id == cnx->high_priority_stream_id) {
-            /* insert in front */
-            stream->previous_output_stream = NULL;
-            stream->next_output_stream = cnx->first_output_stream;
-            if (cnx->first_output_stream != NULL) {
-                cnx->first_output_stream->previous_output_stream = stream;
-            }
+        if (cnx->last_output_stream == NULL) {
+            /* insert first stream */
+            cnx->last_output_stream = stream;
             cnx->first_output_stream = stream;
-        } else {
+        }
+        else if (picoquic_compare_stream_priority(stream, cnx->last_output_stream) > 0) {
+            /* insert after last stream. Common case for most applications. */
             stream->previous_output_stream = cnx->last_output_stream;
-            stream->next_output_stream = NULL;
-            if (cnx->last_output_stream == NULL) {
-                cnx->first_output_stream = stream;
-                cnx->last_output_stream = stream;
+            cnx->last_output_stream->next_output_stream = stream;
+            cnx->last_output_stream = stream;
+        }
+        else {
+            picoquic_stream_head_t* current = cnx->first_output_stream;
+
+            while (current != NULL) {
+                int cmp = picoquic_compare_stream_priority(stream, current);
+
+                if (cmp < 0) {
+                    /* insert before the current stream, then break */
+                    stream->previous_output_stream = current->previous_output_stream;
+                    if (stream->previous_output_stream == NULL) {
+                        cnx->first_output_stream = stream;
+                    }
+                    else {
+                        stream->previous_output_stream->next_output_stream = stream;
+                    }
+                    current->previous_output_stream = stream;
+                    stream->next_output_stream = current;
+                    break;
+                }
+                else if (cmp == 0) {
+                    /* Stream is already there. This is unexpected */
+                    break;
+                }
+                else {
+                    current = current->next_output_stream;
+                }
             }
-            else {
+            if (current == NULL) {
+                /* insert after last stream */
+                stream->previous_output_stream = cnx->last_output_stream;
                 cnx->last_output_stream->next_output_stream = stream;
                 cnx->last_output_stream = stream;
             }
         }
+
         stream->is_output_stream = 1;
     }
 }
@@ -2564,6 +2613,26 @@ void picoquic_remove_output_stream(picoquic_cnx_t* cnx, picoquic_stream_head_t *
         else {
             stream->next_output_stream->previous_output_stream = stream->previous_output_stream;
         }
+    }
+}
+
+void picoquic_reorder_output_stream(picoquic_cnx_t* cnx, picoquic_stream_head_t* stream)
+{
+    int in_order = 0;
+    if (stream->is_output_stream) {
+        if ((stream->previous_output_stream == NULL ||
+            picoquic_compare_stream_priority(stream, stream->previous_output_stream) > 0) &&
+            (stream->next_output_stream == NULL ||
+                picoquic_compare_stream_priority(stream, stream->next_output_stream) < 0)) {
+            in_order = 1;
+        }
+        else {
+            picoquic_remove_output_stream(cnx, stream, NULL);
+            stream->is_output_stream = 0;
+        }
+    }
+    if (!in_order) {
+        picoquic_insert_output_stream(cnx, stream);
     }
 }
 
@@ -2636,6 +2705,8 @@ picoquic_stream_head_t* picoquic_create_stream(picoquic_cnx_t* cnx, uint64_t str
                 is_output_stream = 0;
             }
         }
+
+        stream->stream_priority = cnx->quic->default_stream_priority;
 
         picosplay_init_tree(&stream->stream_data_tree, picoquic_stream_data_node_compare, picoquic_stream_data_node_create, picoquic_stream_data_node_delete, picoquic_stream_data_node_value);
 
@@ -2977,10 +3048,9 @@ picoquic_cnx_t* picoquic_create_cnx(picoquic_quic_t* quic,
         cnx->local_cnxid_oldest_created = start_time;
 
         /* Initialize the connection ID stash */
-        
-        /* Should return 0, since this is the first path */
         ret = picoquic_create_path(cnx, start_time, NULL, addr_to);
         if (ret == 0) {
+            /* Should return 0, since this is the first path */
             ret = picoquic_init_cnxid_stash(cnx);
         }
 
@@ -3150,7 +3220,7 @@ picoquic_cnx_t* picoquic_create_cnx(picoquic_quic_t* quic,
         for (picoquic_packet_context_enum pc = 0;
             pc < picoquic_nb_packet_context; pc++) {
             picoquic_init_ack_ctx(cnx, &cnx->ack_ctx[pc]);
-            picoquic_init_packet_ctx(cnx, &cnx->pkt_ctx[pc]);
+            picoquic_init_packet_ctx(cnx, &cnx->pkt_ctx[pc], pc);
         }
         /* Initialize the ACK behavior. By default, picoquic abides with the recommendation to send
          * ACK immediately if packets are received out of order (ack_ignore_order_remote = 0),
@@ -3224,6 +3294,10 @@ picoquic_cnx_t* picoquic_create_cnx(picoquic_quic_t* quic,
             picoquic_delete_cnx(cnx);
             cnx = NULL;
         }
+    }
+
+    if (quic->use_unique_log_names) {
+        picoquic_crypto_random(quic, &cnx->log_unique, sizeof(cnx->log_unique));
     }
 
     if (cnx != NULL && !cnx->client_mode) {
@@ -3478,10 +3552,15 @@ void picoquic_set_log_level(picoquic_quic_t* quic, int log_level)
     quic->use_long_log = (log_level > 0) ? 1 : 0;
 }
 
+void picoquic_use_unique_log_names(picoquic_quic_t* quic, int use_unique_log_names)
+{
+    quic->use_unique_log_names = use_unique_log_names;
+}
+
 void picoquic_set_random_initial(picoquic_quic_t* quic, int random_initial)
 {
     /* If set, triggers randomization of initial PN numbers. */
-    quic->random_initial = (random_initial > 0) ? 1 : 0;
+    quic->random_initial = (random_initial > 1) ? 2 : ((random_initial > 0) ? 1 : 0);
 }
 
 void picoquic_set_packet_train_mode(picoquic_quic_t* quic, int train_mode)
@@ -4056,6 +4135,9 @@ picoquic_congestion_algorithm_t const* picoquic_get_congestion_algorithm(char co
         }
         else if (strcmp(alg_name, "bbr") == 0) {
             alg = picoquic_bbr_algorithm;
+        }
+        else if (strcmp(alg_name, "prague") == 0) {
+            alg = picoquic_prague_algorithm;
         }
         else {
             alg = NULL;
