@@ -1,3 +1,7 @@
+# About this project
+
+This repository is a fork of the picoquic project which aims to provide a high-performing QUIC stack by bypassing the kernel networking stack using the DPDK library. To use this fork, you need to install the DPDK library first.
+
 # picoquic
 
 Minimalist implementation of the QUIC protocol, as defined by the IETF.
